@@ -1,6 +1,7 @@
 import os
 
 from dataset.loader import TrafficDataset
+from dataset.packet import load_traffic
 import utils
 
 
