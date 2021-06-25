@@ -42,6 +42,15 @@ class TrafficDataset:
         self.slice_length = slice_length
         self.root_dir = root
 
+        print(f'checking the existence of {self.processed_file} ...')
+        if os.path.exists(self.processed_file):
+            print('found, loading processed dataset ...')
+            self.data = pd.read_csv(self.processed_file)
+        else:
+            print('not found, processing dataset ...')
+            import utils
+            self.data = self.load_dataset()
+
     @property
     def raw_dir(self):
         return osp.join(self.root_dir, 'raw')
