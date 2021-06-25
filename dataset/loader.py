@@ -1,3 +1,4 @@
+from time import perf_counter
 import os
 import os.path as osp
 
@@ -9,6 +10,7 @@ import pandas as pd
 
 from .encoder import *
 from .flow import construct_flows
+from .packet import load_traffic
 
 
 DEFAULT_CLASS_LIST = 'Audio_Streaming Browsing Chat Email File_Transfer P2P Video_Streaming VoIP'.split(' ')
@@ -50,22 +52,27 @@ class TrafficDataset:
         os.makedirs(res, exist_ok=True)
         return res
 
+    @property
+    def processed_file(self):
+        filename = f'data-{self.slice_length}.csv'
+        return osp.join(self.processed_dir, filename)
+
     def encode_flow(self, flow: Flow, label: str):
         res = self.encoder(flow)
         res['label'] = label
         return res
 
     def encode_flows(self, flows: List[Flow], label: str) -> List[dict]:
-        res = []
-        tot = len(flows)
-        for i, flow in enumerate(flows):
-            res.append(self.encode_flow(flow, label))
-            print(f'[{label}] flow encoding progress: {i + 1} / {tot}')
+        @ray.remote
+        def f(flow: Flow):
+            return self.encode_flow(flow, label)
+
+        print(f'encoding {len(flows)} flows')
+        res = [f.remote(x) for x in flows]
+        res = ray.get(res)
         return res
 
-    def encode_file(self, path: str, label: str):
-        traffic = list(rdpcap(path))
-        print(f'[{label}] constructing flows ...')
+    def encode_traffic(self, traffic: List[SimplePacket], label: str):
         flows = construct_flows(traffic, slice_length=self.slice_length)
         res = self.encode_flows(flows, label=label)
         return res
@@ -82,13 +89,30 @@ class TrafficDataset:
         return res
 
     def load_dataset(self):
+        data_paths = self.scan_dir()
+
+        datas = []
+
         @ray.remote
         def f(info):
             path, label = info
-            return self.encode_file(path, label)
+            print(f'[TODO] start loading {path} ...')
+            tic = perf_counter()
+            traffic = load_traffic(path)
+            toc = perf_counter()
+            print(f'[LOAD] file {path}, {len(traffic)} packets in total, {toc - tic:.4f} secs elapsed')
+            tic = perf_counter()
+            x = self.encode_traffic(traffic, label)
+            toc = perf_counter()
+            print(f'[DONE] processing {path} in {toc - tic:.4f} secs')
+            return x
 
-        data_paths = self.scan_dir()
         datas = [f.remote(info) for info in data_paths]
         datas = ray.get(datas)
 
-        return chain.from_iterable(datas)
+        data = list(chain.from_iterable(datas))
+        df = pd.DataFrame(data)
+
+        df.to_csv(self.processed_file)
+
+        return df

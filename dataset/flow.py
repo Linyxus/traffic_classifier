@@ -1,7 +1,8 @@
+import ray
 from itertools import chain
 from typing import List
 from dataclasses import dataclass
-from .packet import Slice, Packet, slice_traffic
+from .packet import Slice, SimplePacket, slice_traffic
 
 
 @dataclass
@@ -33,25 +34,19 @@ class Flow:
     @property
     def length(self) -> float:
         all_p = self.forward_packets + self.backward_packets
-        epoch_start = min([p.time for p in all_p])
-        epoch_end = max([p.time for p in all_p])
+        epoch_start = min([p.timestamp for p in all_p])
+        epoch_end = max([p.timestamp for p in all_p])
         return float(epoch_end - epoch_start)
 
 
-def get_descriptor(packet: Packet) -> FlowID:
-    if 'IP' not in packet:
-        return None
-    ip = packet['IP']
-    src_ip = ip.src
-    dst_ip = ip.dst
-    src_port = ip.sport
-    dst_port = ip.dport
-    proto = ip.proto
-    return FlowID(src_ip=src_ip, src_port=src_port, dst_ip=dst_ip, dst_port=dst_port, proto=proto)
+def get_descriptor(packet: SimplePacket) -> FlowID:
+    return FlowID(
+        src_ip=packet.src_ip, src_port=packet.src_port,
+        dst_ip=packet.dst_ip, dst_port=packet.dst_port, proto=packet.proto)
 
 
 def extract_flows(slice: Slice, timespan: float) -> List[Flow]:
-    def push_packet(d: dict, k: FlowID, v: Packet):
+    def push_packet(d: dict, k: FlowID, v: SimplePacket):
         if k in d:
             prev = d[k]
             prev.append(v)
@@ -78,12 +73,16 @@ def extract_flows(slice: Slice, timespan: float) -> List[Flow]:
     return [construct_flow(k) for k in keys]
 
 
-def construct_flows(traffic: List[Packet], slice_length: float = 15.0) -> List[Flow]:
+def construct_flows(traffic: List[SimplePacket], slice_length: float = 15.0) -> List[Flow]:
     slices = slice_traffic(traffic, slice_length=slice_length)
 
+    print(f'constructing flows from {len(slices)} slices')
+
+    @ray.remote
     def f(slice: Slice):
         return extract_flows(slice, timespan=slice_length)
 
-    fss = [f(x) for x in slices]
+    fss = [f.remote(x) for x in slices]
+    fss = ray.get(fss)
 
     return list(chain.from_iterable(fss))
